@@ -15,6 +15,7 @@ service RaftTelemetryService {
   // Client Ingestion & Query RPCs
   rpc IngestPlayEvent (PlayEvent) returns (IngestAck);
   rpc GetPlayerStats (PlayerQuery) returns (PlayerBoxScore);
+  rpc Ping(PingRequest) returns (PingResponse);
 }
 
 // NBA event types
@@ -94,4 +95,13 @@ message PlayerBoxScore {
   int32 points = 3;
   int32 rebounds = 4;
   int32 assists = 5;
+}
+
+message PingRequest {
+  string sender_id = 1;
+}
+
+message PingResponse {
+  string receiver_id = 1;
+  bool success = 2;
 }
