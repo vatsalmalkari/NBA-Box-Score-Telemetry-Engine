@@ -1,0 +1,67 @@
+services:
+  node-1:
+    build: .
+    container_name: raft-node-1
+    environment:
+      NODE_ID: "node-1"
+      PORT: "50051"
+      PEERS: "node-2:50051,node-3:50051"
+      DB_URL: "jdbc:postgresql://postgres:5432/nba_telemetry"
+      DB_USER: "nba_admin"
+      DB_PASS: "localdevpass"
+    ports:
+      - "50051:50051"
+    depends_on:
+      - postgres
+    networks:
+      - raft-net
+
+  node-2:
+    build: .
+    container_name: raft-node-2
+    environment:
+      NODE_ID: "node-2"
+      PORT: "50051"
+      PEERS: "node-1:50051,node-3:50051"
+      DB_URL: "jdbc:postgresql://postgres:5432/nba_telemetry"
+      DB_USER: "nba_admin"
+      DB_PASS: "localdevpass"
+    ports:
+      - "50052:50051"
+    depends_on:
+      - postgres
+    networks:
+      - raft-net
+
+  node-3:
+    build: .
+    container_name: raft-node-3
+    environment:
+      NODE_ID: "node-3"
+      PORT: "50051"
+      PEERS: "node-1:50051,node-2:50051"
+      DB_URL: "jdbc:postgresql://postgres:5432/nba_telemetry"
+      DB_USER: "nba_admin"
+      DB_PASS: "localdevpass"
+    ports:
+      - "50053:50051"
+    depends_on:
+      - postgres
+    networks:
+      - raft-net
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: nba-postgres
+    environment:
+      POSTGRES_DB: "nba_telemetry"
+      POSTGRES_USER: "nba_admin"
+      POSTGRES_PASSWORD: "localdevpass"
+    ports:
+      - "5432:5432"
+    networks:
+      - raft-net
+
+networks:
+  raft-net:
+    driver: bridge
