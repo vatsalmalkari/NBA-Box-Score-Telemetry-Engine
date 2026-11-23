@@ -1,3 +1,4 @@
+
 services:
   node-1:
     build: .
@@ -6,15 +7,20 @@ services:
       NODE_ID: "node-1"
       PORT: "50051"
       PEERS: "node-2:50051,node-3:50051"
+      WAL_DIR: "/data/wal"
       DB_URL: "jdbc:postgresql://postgres:5432/nba_telemetry"
       DB_USER: "nba_admin"
       DB_PASS: "localdevpass"
     ports:
       - "50051:50051"
+    volumes:
+      - node-1-data:/data
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
     networks:
       - raft-net
+    restart: unless-stopped
 
   node-2:
     build: .
@@ -23,15 +29,20 @@ services:
       NODE_ID: "node-2"
       PORT: "50051"
       PEERS: "node-1:50051,node-3:50051"
+      WAL_DIR: "/data/wal"
       DB_URL: "jdbc:postgresql://postgres:5432/nba_telemetry"
       DB_USER: "nba_admin"
       DB_PASS: "localdevpass"
     ports:
       - "50052:50051"
+    volumes:
+      - node-2-data:/data
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
     networks:
       - raft-net
+    restart: unless-stopped
 
   node-3:
     build: .
@@ -40,15 +51,20 @@ services:
       NODE_ID: "node-3"
       PORT: "50051"
       PEERS: "node-1:50051,node-2:50051"
+      WAL_DIR: "/data/wal"
       DB_URL: "jdbc:postgresql://postgres:5432/nba_telemetry"
       DB_USER: "nba_admin"
       DB_PASS: "localdevpass"
     ports:
       - "50053:50051"
+    volumes:
+      - node-3-data:/data
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
     networks:
       - raft-net
+    restart: unless-stopped
 
   postgres:
     image: postgres:16-alpine
@@ -59,9 +75,23 @@ services:
       POSTGRES_PASSWORD: "localdevpass"
     ports:
       - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nba_admin -d nba_telemetry"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
     networks:
       - raft-net
+    restart: unless-stopped
 
 networks:
   raft-net:
     driver: bridge
+
+volumes:
+  node-1-data:
+  node-2-data:
+  node-3-data:
+  postgres-data:
