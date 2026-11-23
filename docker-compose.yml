@@ -11,6 +11,7 @@ services:
       DB_URL: "jdbc:postgresql://postgres:5432/nba_telemetry"
       DB_USER: "nba_admin"
       DB_PASS: "localdevpass"
+      RAFT_STATE_FILE: /data/raft-state.properties
     ports:
       - "50051:50051"
     volumes:
@@ -33,6 +34,7 @@ services:
       DB_URL: "jdbc:postgresql://postgres:5432/nba_telemetry"
       DB_USER: "nba_admin"
       DB_PASS: "localdevpass"
+      RAFT_STATE_FILE: /data/raft-state.properties
     ports:
       - "50052:50051"
     volumes:
@@ -55,6 +57,7 @@ services:
       DB_URL: "jdbc:postgresql://postgres:5432/nba_telemetry"
       DB_USER: "nba_admin"
       DB_PASS: "localdevpass"
+      RAFT_STATE_FILE: /data/raft-state.properties
     ports:
       - "50053:50051"
     volumes:

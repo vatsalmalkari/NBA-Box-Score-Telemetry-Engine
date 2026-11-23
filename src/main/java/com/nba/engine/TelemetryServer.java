@@ -2,6 +2,8 @@ package com.nba.engine;
 
 import com.nba.engine.grpc.PeerClient;
 import com.nba.engine.grpc.TelemetryServiceImpl;
+import com.nba.engine.raft.RaftNode;
+import com.nba.engine.raft.RaftStateStore;
 
 import io.grpc.Server;
 import io.grpc.ServerBuilder;
@@ -17,15 +19,8 @@ public class TelemetryServer {
 
         NodeConfig config = NodeConfig.fromEnvironment();
 
-        Server server = ServerBuilder
-                .forPort(50051)
-                .addService(new TelemetryServiceImpl(config.nodeId()))
-                .build()
-                .start();
-
-        System.out.println(
-                config.nodeId() + " started on port 50051"
-        );
+        String stateFile = System.getenv()
+                .getOrDefault("RAFT_STATE_FILE", "/data/raft-state.properties");
 
         List<PeerClient> peerClients = new ArrayList<>();
 
@@ -33,42 +28,38 @@ public class TelemetryServer {
             peerClients.add(new PeerClient(peer));
         }
 
+        RaftStateStore stateStore = new RaftStateStore(stateFile);
+
+        RaftNode raftNode = new RaftNode(
+                config.nodeId(),
+                peerClients,
+                stateStore
+        );
+
+        Server server = ServerBuilder
+                .forPort(50051)
+                .addService(new TelemetryServiceImpl(
+                        config.nodeId(),
+                        raftNode
+                ))
+                .build()
+                .start();
+
+        System.out.println(
+                config.nodeId() + " started on port 50051"
+        );
+
+        raftNode.start();
+
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            System.out.println(config.nodeId() + " shutting down");
+
             server.shutdown();
 
-            for (PeerClient client : peerClients) {
-                client.close();
+            for (PeerClient peer : peerClients) {
+                peer.close();
             }
         }));
-
-        // Try to contact each peer.
-        for (int i = 0; i < peerClients.size(); i++) {
-            PeerClient client = peerClients.get(i);
-            String peer = config.peers().get(i);
-
-            boolean connected = false;
-
-            for (int attempt = 1; attempt <= 10; attempt++) {
-                try {
-                    client.ping(config.nodeId());
-                    connected = true;
-                    break;
-                } catch (Exception e) {
-                    System.out.println(
-                            config.nodeId() + " cannot reach " + peer
-                                    + " (attempt " + attempt + "/10)"
-                    );
-
-                    Thread.sleep(1000);
-                }
-            }
-
-            if (!connected) {
-                System.out.println(
-                        config.nodeId() + " could not reach " + peer
-                );
-            }
-        }
 
         server.awaitTermination();
     }

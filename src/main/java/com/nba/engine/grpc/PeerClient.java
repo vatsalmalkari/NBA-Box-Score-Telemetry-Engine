@@ -10,8 +10,7 @@ public class PeerClient implements AutoCloseable {
     private final String peerAddress;
     private final ManagedChannel channel;
 
-    private final RaftTelemetryServiceGrpc
-            .RaftTelemetryServiceBlockingStub blockingStub;
+    private final RaftTelemetryServiceGrpc.RaftTelemetryServiceBlockingStub stub;
 
     public PeerClient(String peerAddress) {
         this.peerAddress = peerAddress;
@@ -21,24 +20,31 @@ public class PeerClient implements AutoCloseable {
                 .usePlaintext()
                 .build();
 
-        this.blockingStub =
-                RaftTelemetryServiceGrpc.newBlockingStub(channel);
+        this.stub = RaftTelemetryServiceGrpc
+                .newBlockingStub(channel);
     }
 
-    public void ping(String senderId) {
+    public VoteResponse requestVote(VoteRequest request) {
+        return stub.withDeadlineAfter(1, TimeUnit.SECONDS)
+                .requestVote(request);
+    }
+
+    public AppendResponse appendEntries(AppendRequest request) {
+        return stub.withDeadlineAfter(1, TimeUnit.SECONDS)
+                .appendEntries(request);
+    }
+
+    public PingResponse ping(String senderId) {
         PingRequest request = PingRequest.newBuilder()
                 .setSenderId(senderId)
                 .build();
 
-        PingResponse response = blockingStub
-                .withDeadlineAfter(3, TimeUnit.SECONDS)
+        return stub.withDeadlineAfter(3, TimeUnit.SECONDS)
                 .ping(request);
+    }
 
-        System.out.println(
-                senderId + " pinged " + peerAddress
-                        + " | receiver=" + response.getReceiverId()
-                        + " | success=" + response.getSuccess()
-        );
+    public String getPeerAddress() {
+        return peerAddress;
     }
 
     @Override
