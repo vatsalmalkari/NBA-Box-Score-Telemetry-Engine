@@ -7,9 +7,15 @@ import com.nba.engine.grpc.AppendRequest;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
+
 import com.nba.engine.grpc.AppendResponse;
+import java.util.stream.Collectors; 
+import java.util.Map;
 
 
 public class RaftNode {
@@ -18,11 +24,9 @@ public class RaftNode {
     private final List<PeerClient> peers;
     private final RaftStateStore stateStore;
 
-    private final ScheduledExecutorService scheduler =
-            Executors.newSingleThreadScheduledExecutor();
+    private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
 
-    private final ExecutorService rpcExecutor =
-            Executors.newFixedThreadPool(4);
+    private final ExecutorService rpcExecutor = Executors.newVirtualThreadPerTaskExecutor();
 
     private RaftRole role = RaftRole.FOLLOWER;
 
@@ -50,6 +54,7 @@ public class RaftNode {
 
         this.currentTerm = stateStore.loadTerm();
         this.votedFor = stateStore.loadVotedFor();
+        this.heartbeatInFlight = peers.stream().collect(Collectors.toMap(p -> p, p -> new AtomicBoolean(false)));
 
         this.clusterSize = peers.size() + 1;
         this.majority = clusterSize / 2 + 1;
@@ -59,6 +64,8 @@ public class RaftNode {
                         + ", votedFor=" + votedFor
         );
     }
+
+        private final Map<PeerClient, AtomicBoolean> heartbeatInFlight;
 
     public synchronized void start() {
         resetElectionTimer();
@@ -73,8 +80,7 @@ public class RaftNode {
             electionTask.cancel(false);
         }
 
-        int timeoutMs = ThreadLocalRandom.current()
-                .nextInt(300, 501);
+        int timeoutMs = ThreadLocalRandom.current().nextInt(500, 801);
 
         electionTask = scheduler.schedule(
                 this::startElection,
@@ -295,20 +301,23 @@ private void sendHeartbeats() {
             .build();
 
     for (PeerClient peer : peers) {
+        AtomicBoolean busy = heartbeatInFlight.get(peer);
+        if (!busy.compareAndSet(false, true)) {
+            continue;
+        }
         rpcExecutor.execute(() -> {
             try {
                 AppendResponse response = peer.appendEntries(request);
-
                 synchronized (this) {
                     if (response.getTerm() > currentTerm) {
                         stepDown(response.getTerm());
                     }
                 }
-
             } catch (Exception e) {
                 System.out.println(
-                        nodeId + " heartbeat failed: " + e.getMessage()
-                );
+                        nodeId + " heartbeat failed: " + e.getMessage());
+            } finally {
+                busy.set(false);
             }
         });
     }

@@ -25,12 +25,12 @@ public class PeerClient implements AutoCloseable {
     }
 
     public VoteResponse requestVote(VoteRequest request) {
-        return stub.withDeadlineAfter(1, TimeUnit.SECONDS)
+        return stub.withDeadlineAfter(300, TimeUnit.MILLISECONDS)
                 .requestVote(request);
     }
 
     public AppendResponse appendEntries(AppendRequest request) {
-        return stub.withDeadlineAfter(1, TimeUnit.SECONDS)
+        return stub.withDeadlineAfter(150, TimeUnit.MILLISECONDS)
                 .appendEntries(request);
     }
 
