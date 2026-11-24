@@ -1,32 +1,40 @@
 package com.nba.engine.raft;
 
+import com.nba.engine.grpc.AppendRequest;
+import com.nba.engine.grpc.AppendResponse;
 import com.nba.engine.grpc.PeerClient;
 import com.nba.engine.grpc.VoteRequest;
 import com.nba.engine.grpc.VoteResponse;
-import com.nba.engine.grpc.AppendRequest;
 
 import java.io.IOException;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.stream.Collectors;
-
-import com.nba.engine.grpc.AppendResponse;
-import java.util.stream.Collectors; 
-import java.util.Map;
-
 
 public class RaftNode {
+
+    // Must be shorter than the election timeout minimum (500ms)
+    // and longer than several heartbeat intervals (75ms).
+    private static final int LEADER_LEASE_MS = 400;
 
     private final String nodeId;
     private final List<PeerClient> peers;
     private final RaftStateStore stateStore;
 
-    private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+    private final ScheduledExecutorService scheduler =
+            Executors.newSingleThreadScheduledExecutor();
 
-    private final ExecutorService rpcExecutor = Executors.newVirtualThreadPerTaskExecutor();
+    private final ExecutorService rpcExecutor =
+            Executors.newVirtualThreadPerTaskExecutor();
+
+    private final Map<PeerClient, AtomicBoolean> heartbeatInFlight;
+
+    private final int clusterSize;
+    private final int majority;
 
     private RaftRole role = RaftRole.FOLLOWER;
 
@@ -37,10 +45,16 @@ public class RaftNode {
     private ScheduledFuture<?> electionTask;
     private ScheduledFuture<?> heartbeatTask;
 
-    private final int clusterSize;
-    private final int majority;
+    // Peers (plus self) that granted a vote in the current real election.
+    // A Set makes counting idempotent: a duplicate reply can't raise the count.
+    private final Set<String> votesGranted = new HashSet<>();
 
-    private int votesReceived;
+    // Pre-vote state. electionRound identifies one election attempt, so
+    // replies from an older attempt are ignored.
+    private long electionRound = 0;
+    private int preVotesReceived = 0;
+
+    private long lastLeaderContactMillis = 0;
 
     public RaftNode(
             String nodeId,
@@ -54,18 +68,18 @@ public class RaftNode {
 
         this.currentTerm = stateStore.loadTerm();
         this.votedFor = stateStore.loadVotedFor();
-        this.heartbeatInFlight = peers.stream().collect(Collectors.toMap(p -> p, p -> new AtomicBoolean(false)));
 
         this.clusterSize = peers.size() + 1;
         this.majority = clusterSize / 2 + 1;
 
-        System.out.println(
-                nodeId + " recovered term=" + currentTerm
-                        + ", votedFor=" + votedFor
-        );
-    }
+        this.heartbeatInFlight = new HashMap<>();
+        for (PeerClient peer : peers) {
+            heartbeatInFlight.put(peer, new AtomicBoolean(false));
+        }
 
-        private final Map<PeerClient, AtomicBoolean> heartbeatInFlight;
+        System.out.println(nodeId + " recovered term=" + currentTerm
+                + ", votedFor=" + votedFor);
+    }
 
     public synchronized void start() {
         resetElectionTimer();
@@ -83,53 +97,114 @@ public class RaftNode {
         int timeoutMs = ThreadLocalRandom.current().nextInt(500, 801);
 
         electionTask = scheduler.schedule(
-                this::startElection,
-                timeoutMs,
-                TimeUnit.MILLISECONDS
-        );
+                this::startElection, timeoutMs, TimeUnit.MILLISECONDS);
     }
 
+    // ---------- Pre-vote phase ----------
+
     private void startElection() {
-        final long electionTerm;
+        final long round;
+        final long proposedTerm;
 
         synchronized (this) {
             if (role == RaftRole.LEADER) {
                 return;
             }
 
-            role = RaftRole.CANDIDATE;
-            currentTerm++;
-            votedFor = nodeId;
-            leaderId = null;
-            votesReceived = 1;
+            // The timer fired just as a leader's heartbeat arrived.
+            // Don't start an election while the leader is still active.
+            if (heardFromLeaderRecently()) {
+                resetElectionTimer();
+                return;
+            }
 
-            persistState();
-
-            electionTerm = currentTerm;
-
-            System.out.println(
-                    nodeId + " became CANDIDATE for term " + currentTerm
-            );
-
+            round = ++electionRound;
+            proposedTerm = currentTerm + 1;
+            preVotesReceived = 1; // vote for self
             resetElectionTimer();
 
-            if (votesReceived >= majority) {
-                becomeLeader();
+            if (preVotesReceived >= majority) {
+                beginRealElection();
                 return;
             }
         }
 
         for (PeerClient peer : peers) {
-            rpcExecutor.execute(() -> requestVoteFromPeer(
-                    peer, electionTerm
-            ));
+            rpcExecutor.execute(() -> preVoteFromPeer(peer, round, proposedTerm));
         }
     }
 
-    private void requestVoteFromPeer(
-            PeerClient peer,
-            long electionTerm
-    ) {
+    private void preVoteFromPeer(PeerClient peer, long round, long proposedTerm) {
+        VoteRequest request = VoteRequest.newBuilder()
+                .setTerm(proposedTerm)
+                .setCandidateId(nodeId)
+                .setLastLogIndex(0)
+                .setLastLogTerm(0)
+                .build();
+
+        try {
+            VoteResponse response = peer.preVote(request);
+
+            synchronized (this) {
+                if (response.getTerm() > currentTerm) {
+                    stepDown(response.getTerm());
+                    return;
+                }
+
+                // Ignore replies from an older round, a round that already
+                // became a real election, or a term we've moved past.
+                if (round != electionRound
+                        || role == RaftRole.LEADER
+                        || proposedTerm != currentTerm + 1
+                        || !response.getVoteGranted()) {
+                    return;
+                }
+
+                preVotesReceived++;
+
+                if (preVotesReceived >= majority) {
+                    beginRealElection();
+                }
+            }
+        } catch (Exception e) {
+            System.out.println(nodeId + " pre-vote failed: " + e.getMessage());
+        }
+    }
+
+    // Caller must hold the RaftNode monitor.
+    private void beginRealElection() {
+        if (role == RaftRole.LEADER) {
+            return;
+        }
+
+        // Invalidate any remaining pre-vote replies for this round.
+        electionRound++;
+
+        role = RaftRole.CANDIDATE;
+        currentTerm++;
+        votedFor = nodeId;
+        leaderId = null;
+        votesGranted.clear();
+        votesGranted.add(nodeId);
+        persistState();
+
+        final long electionTerm = currentTerm;
+
+        System.out.println(nodeId + " became CANDIDATE for term " + currentTerm);
+
+        if (votesGranted.size() >= majority) {
+            becomeLeader();
+            return;
+        }
+
+        for (PeerClient peer : peers) {
+            rpcExecutor.execute(() -> requestVoteFromPeer(peer, electionTerm));
+        }
+    }
+
+    // ---------- Real vote phase ----------
+
+    private void requestVoteFromPeer(PeerClient peer, long electionTerm) {
         VoteRequest request = VoteRequest.newBuilder()
                 .setTerm(electionTerm)
                 .setCandidateId(nodeId)
@@ -146,38 +221,52 @@ public class RaftNode {
                     return;
                 }
 
-                if (role != RaftRole.CANDIDATE
-                        || currentTerm != electionTerm) {
+                if (role != RaftRole.CANDIDATE || currentTerm != electionTerm) {
                     return;
                 }
 
-                if (response.getVoteGranted()) {
-                    votesReceived++;
+                // add() returns false if this peer already counted, so a
+                // duplicate or late reply can't push the count over the line.
+                if (response.getVoteGranted() && votesGranted.add(peer.getPeerAddress())) {
+                    System.out.println(nodeId + " received vote for term "
+                            + electionTerm + " (" + votesGranted.size() + "/" + majority + ")");
 
-                    System.out.println(
-                            nodeId + " received vote for term "
-                                    + electionTerm + " ("
-                                    + votesReceived + "/" + majority + ")"
-                    );
-
-                    if (votesReceived >= majority) {
+                    if (votesGranted.size() >= majority) {
                         becomeLeader();
                     }
                 }
             }
-
         } catch (Exception e) {
-            System.out.println(
-                    nodeId + " could not obtain vote from peer: "
-                            + e.getMessage()
-            );
+            System.out.println(nodeId + " could not obtain vote from peer: " + e.getMessage());
         }
     }
 
-    public synchronized VoteResponse handleVoteRequest(
-            VoteRequest request
-    ) {
+    public synchronized VoteResponse handlePreVote(VoteRequest request) {
+        // A pre-vote never changes local state. Deny it if we are the leader,
+        // or if we heard from a leader recently. Only a proposed term above
+        // ours can win.
+        boolean grant = role != RaftRole.LEADER
+                && request.getTerm() > currentTerm
+                && !heardFromLeaderRecently();
+
+        return VoteResponse.newBuilder()
+                .setTerm(currentTerm)
+                .setVoteGranted(grant)
+                .build();
+    }
+
+    public synchronized VoteResponse handleVoteRequest(VoteRequest request) {
+        // Reject candidates from older terms outright.
         if (request.getTerm() < currentTerm) {
+            return VoteResponse.newBuilder()
+                    .setTerm(currentTerm)
+                    .setVoteGranted(false)
+                    .build();
+        }
+
+        // Leader stickiness: while we hear from a leader, refuse to let a
+        // higher term disrupt the cluster. Do not update our term here.
+        if (heardFromLeaderRecently() && request.getTerm() > currentTerm) {
             return VoteResponse.newBuilder()
                     .setTerm(currentTerm)
                     .setVoteGranted(false)
@@ -188,15 +277,12 @@ public class RaftNode {
             updateTerm(request.getTerm());
         }
 
-        // The log is not implemented yet, so both nodes should
-        // currently have an empty log.
+        // The log is not implemented yet, so both nodes have empty logs.
         boolean candidateLogIsUpToDate =
-                request.getLastLogIndex() == 0
-                        && request.getLastLogTerm() == 0;
+                request.getLastLogIndex() == 0 && request.getLastLogTerm() == 0;
 
-        boolean canVote =
-                votedFor == null
-                        || votedFor.equals(request.getCandidateId());
+        boolean canVote = votedFor == null
+                || votedFor.equals(request.getCandidateId());
 
         boolean grantVote = canVote && candidateLogIsUpToDate;
 
@@ -209,10 +295,8 @@ public class RaftNode {
 
             resetElectionTimer();
 
-            System.out.println(
-                    nodeId + " voted for " + request.getCandidateId()
-                            + " in term " + currentTerm
-            );
+            System.out.println(nodeId + " voted for " + request.getCandidateId()
+                    + " in term " + currentTerm);
         }
 
         return VoteResponse.newBuilder()
@@ -220,6 +304,8 @@ public class RaftNode {
                 .setVoteGranted(grantVote)
                 .build();
     }
+
+    // ---------- Leader / heartbeat ----------
 
     public synchronized AppendResponse handleAppendEntries(AppendRequest request) {
         if (request.getTerm() < currentTerm) {
@@ -229,8 +315,17 @@ public class RaftNode {
                     .build();
         }
 
+        // A valid leader for this term or a newer one. Record contact first,
+        // so the lease covers this heartbeat.
+        lastLeaderContactMillis = System.currentTimeMillis();
+
         if (request.getTerm() > currentTerm) {
             updateTerm(request.getTerm());
+        }
+
+        if (role != RaftRole.FOLLOWER) {
+            System.out.println(nodeId + " demoted by leader " + request.getLeaderId()
+                    + " in term " + request.getTerm());
         }
 
         role = RaftRole.FOLLOWER;
@@ -241,15 +336,16 @@ public class RaftNode {
             heartbeatTask = null;
         }
 
-        if (request.getPrevLogIndex() != 0
-                || !request.getEntriesList().isEmpty()) {
+        // Reset the election timer on every valid leader message,
+        // before any log checks.
+        resetElectionTimer();
+
+        if (request.getPrevLogIndex() != 0 || !request.getEntriesList().isEmpty()) {
             return AppendResponse.newBuilder()
                     .setTerm(currentTerm)
                     .setSuccess(false)
                     .build();
         }
-
-        resetElectionTimer();
 
         return AppendResponse.newBuilder()
                 .setTerm(currentTerm)
@@ -269,59 +365,55 @@ public class RaftNode {
             electionTask.cancel(false);
         }
 
-        System.out.println(
-                nodeId + " became LEADER for term " + currentTerm
-        );
+        System.out.println(nodeId + " became LEADER for term " + currentTerm);
 
         heartbeatTask = scheduler.scheduleAtFixedRate(
-                this::sendHeartbeats,
-                0,
-                75,
-                TimeUnit.MILLISECONDS
-        );
+                this::sendHeartbeats, 0, 75, TimeUnit.MILLISECONDS);
     }
 
-private void sendHeartbeats() {
-    final long term;
+    private void sendHeartbeats() {
+        final long term;
 
-    synchronized (this) {
-        if (role != RaftRole.LEADER) {
-            return;
-        }
-
-        term = currentTerm;
-    }
-
-    AppendRequest request = AppendRequest.newBuilder()
-            .setTerm(term)
-            .setLeaderId(nodeId)
-            .setPrevLogIndex(0)
-            .setPrevLogTerm(0)
-            .setLeaderCommit(0)
-            .build();
-
-    for (PeerClient peer : peers) {
-        AtomicBoolean busy = heartbeatInFlight.get(peer);
-        if (!busy.compareAndSet(false, true)) {
-            continue;
-        }
-        rpcExecutor.execute(() -> {
-            try {
-                AppendResponse response = peer.appendEntries(request);
-                synchronized (this) {
-                    if (response.getTerm() > currentTerm) {
-                        stepDown(response.getTerm());
-                    }
-                }
-            } catch (Exception e) {
-                System.out.println(
-                        nodeId + " heartbeat failed: " + e.getMessage());
-            } finally {
-                busy.set(false);
+        synchronized (this) {
+            if (role != RaftRole.LEADER) {
+                return;
             }
-        });
+            term = currentTerm;
+        }
+
+        AppendRequest request = AppendRequest.newBuilder()
+                .setTerm(term)
+                .setLeaderId(nodeId)
+                .setPrevLogIndex(0)
+                .setPrevLogTerm(0)
+                .setLeaderCommit(0)
+                .build();
+
+        for (PeerClient peer : peers) {
+            AtomicBoolean busy = heartbeatInFlight.get(peer);
+            if (!busy.compareAndSet(false, true)) {
+                continue; // previous heartbeat to this peer still pending
+            }
+
+            rpcExecutor.execute(() -> {
+                try {
+                    AppendResponse response = peer.appendEntries(request);
+
+                    synchronized (this) {
+                        if (response.getTerm() > currentTerm) {
+                            stepDown(response.getTerm());
+                        }
+                    }
+                } catch (Exception e) {
+                    System.out.println(nodeId + " heartbeat failed: " + e.getMessage());
+                } finally {
+                    busy.set(false);
+                }
+            });
+        }
     }
-}
+
+    // ---------- Term and state management ----------
 
     private synchronized void stepDown(long newTerm) {
         updateTerm(newTerm);
@@ -335,12 +427,10 @@ private void sendHeartbeats() {
 
         resetElectionTimer();
 
-        System.out.println(
-                nodeId + " stepped down; current term=" + currentTerm
-        );
+        System.out.println(nodeId + " stepped down; current term=" + currentTerm);
     }
 
-        private void updateTerm(long newTerm) {
+    private void updateTerm(long newTerm) {
         currentTerm = newTerm;
         votedFor = null;
         role = RaftRole.FOLLOWER;
@@ -352,17 +442,21 @@ private void sendHeartbeats() {
         }
 
         persistState();
-        }
+    }
 
     private void persistState() {
         try {
             stateStore.save(currentTerm, votedFor);
         } catch (IOException e) {
-            throw new IllegalStateException(
-                    "Could not persist Raft state", e
-            );
+            throw new IllegalStateException("Could not persist Raft state", e);
         }
     }
+
+    private boolean heardFromLeaderRecently() {
+        return System.currentTimeMillis() - lastLeaderContactMillis < LEADER_LEASE_MS;
+    }
+
+    // ---------- Accessors ----------
 
     public synchronized String getNodeId() {
         return nodeId;

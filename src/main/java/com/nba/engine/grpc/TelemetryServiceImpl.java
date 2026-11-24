@@ -53,4 +53,10 @@ public class TelemetryServiceImpl
         responseObserver.onNext(response);
         responseObserver.onCompleted();
     }
+
+    @Override 
+    public void preVote(VoteRequest request, StreamObserver<VoteResponse> observer) {
+        observer.onNext(raftNode.handlePreVote(request));
+        observer.onCompleted();
+    }
 }

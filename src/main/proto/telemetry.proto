@@ -11,11 +11,13 @@ service RaftTelemetryService {
   // Raft Consensus RPCs
   rpc RequestVote (VoteRequest) returns (VoteResponse);
   rpc AppendEntries (AppendRequest) returns (AppendResponse);
+  rpc PreVote (VoteRequest) returns (VoteResponse);
 
   // Client Ingestion & Query RPCs
   rpc IngestPlayEvent (PlayEvent) returns (IngestAck);
   rpc GetPlayerStats (PlayerQuery) returns (PlayerBoxScore);
   rpc Ping(PingRequest) returns (PingResponse);
+  
 }
 
 // NBA event types

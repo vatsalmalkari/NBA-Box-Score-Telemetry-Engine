@@ -25,11 +25,10 @@ public class PeerClient implements AutoCloseable {
     }
 
     public VoteResponse requestVote(VoteRequest request) {
-        return stub.withDeadlineAfter(300, TimeUnit.MILLISECONDS)
-                .requestVote(request);
+        return stub.withDeadlineAfter(300, TimeUnit.MILLISECONDS).preVote(request);
     }
 
-    public AppendResponse appendEntries(AppendRequest request) {
+    public AppendResponse appendEntries(AppendRequest request) {  
         return stub.withDeadlineAfter(150, TimeUnit.MILLISECONDS)
                 .appendEntries(request);
     }
@@ -59,5 +58,10 @@ public class PeerClient implements AutoCloseable {
             channel.shutdownNow();
             Thread.currentThread().interrupt();
         }
+    }
+
+    public VoteResponse preVote(VoteRequest request) {
+        return stub.withDeadlineAfter(300, TimeUnit.MILLISECONDS)
+                .preVote(request);
     }
 }
