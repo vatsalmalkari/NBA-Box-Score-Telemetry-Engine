@@ -22,6 +22,7 @@ public class RaftNode {
     private final String nodeId;
     private final List<PeerClient> peers;
     private final RaftStateStore stateStore;
+    private final RaftLog raftLog;
 
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
 
@@ -48,15 +49,18 @@ public class RaftNode {
     // Pre-vote state. electionRound identifies one election attempt, so replies from an older attempt are ignored.
     private long electionRound = 0;
     private int preVotesReceived = 0;
+    private long commitIndex = 0;
+    private long lastApplied = 0;
 
     private long lastLeaderContactMillis = 0;
 
-    public RaftNode(String nodeId, List<PeerClient> peers, RaftStateStore stateStore) 
+    public RaftNode(String nodeId, List<PeerClient> peers, RaftStateStore stateStore, RaftLog raftLog) 
     throws IOException {
 
         this.nodeId = nodeId;
         this.peers = peers;
         this.stateStore = stateStore;
+        this.raftLog = raftLog;
 
         this.currentTerm = stateStore.loadTerm();
         this.votedFor = stateStore.loadVotedFor();
@@ -125,7 +129,7 @@ public class RaftNode {
     }
 
     private void preVoteFromPeer(PeerClient peer, long round, long proposedTerm) {
-        VoteRequest request = VoteRequest.newBuilder().setTerm(proposedTerm).setCandidateId(nodeId).setLastLogIndex(0).setLastLogTerm(0).build();
+        VoteRequest request = buildVoteRequest(proposedTerm);
 
         try {
             VoteResponse response = peer.preVote(request);
@@ -187,7 +191,7 @@ public class RaftNode {
     // ---------- Real vote phase ----------
 
     private void requestVoteFromPeer(PeerClient peer, long electionTerm) {
-        VoteRequest request = VoteRequest.newBuilder().setTerm(electionTerm).setCandidateId(nodeId).setLastLogIndex(0).setLastLogTerm(0).build();
+        VoteRequest request = buildVoteRequest(electionTerm);
 
         try {
             VoteResponse response = peer.requestVote(request);
@@ -219,9 +223,8 @@ public class RaftNode {
 
     public synchronized VoteResponse handlePreVote(VoteRequest request) {
         // A pre-vote never changes local state. Deny it if we are the leader,
-        // or if we heard from a leader recently. Only a proposed term above
-        // ours can win.
-        boolean grant = role != RaftRole.LEADER && request.getTerm() > currentTerm && !heardFromLeaderRecently();
+        // or if we heard from a leader recently. Only a proposed term above ours can win.
+        boolean grant = role != RaftRole.LEADER && request.getTerm() > currentTerm && !heardFromLeaderRecently() && isCandidateLogUpToDate(request);
 
         return VoteResponse.newBuilder().setTerm(currentTerm).setVoteGranted(grant).build();
     }
@@ -242,8 +245,12 @@ public class RaftNode {
             updateTerm(request.getTerm());
         }
 
+        if (!isCandidateLogUpToDate(request)) {
+            return VoteResponse.newBuilder().setTerm(currentTerm).setVoteGranted(false).build();
+        }
+
         // The log is not implemented yet, so both nodes have empty logs.
-        boolean candidateLogIsUpToDate = request.getLastLogIndex() == 0 && request.getLastLogTerm() == 0;
+        boolean candidateLogIsUpToDate = isCandidateLogUpToDate(request);
 
         boolean canVote = votedFor == null || votedFor.equals(request.getCandidateId());
 
@@ -263,8 +270,6 @@ public class RaftNode {
 
         return VoteResponse.newBuilder().setTerm(currentTerm).setVoteGranted(grantVote).build();
     }
-
-    // ---------- Leader / heartbeat ----------
 
     public synchronized AppendResponse handleAppendEntries(AppendRequest request) {
         if (request.getTerm() < currentTerm) {
@@ -390,6 +395,34 @@ public class RaftNode {
         } catch (IOException e) {
             throw new IllegalStateException("Could not persist Raft state", e);
         }
+    }
+
+    private long lastLogIndex() {
+        return raftLog.lastIndex();
+    }
+
+    private long lastLogTerm() {
+        try {
+                return raftLog.lastTerm();
+        }   
+        catch (IOException e) {
+                throw new IllegalStateException("Failed to read last log term", e);
+        }
+    }
+
+    private VoteRequest buildVoteRequest(long term) {
+        return VoteRequest.newBuilder().setTerm(term).setCandidateId(nodeId).setLastLogIndex(lastLogIndex()).setLastLogTerm(lastLogTerm()).build();
+    }
+
+    private boolean isCandidateLogUpToDate(VoteRequest request) {
+        long localLastTerm = lastLogTerm();
+        long localLastIndex = lastLogIndex();
+
+        if (request.getLastLogTerm() != localLastTerm) {
+            return request.getLastLogTerm() > localLastTerm;
+        }
+
+        return request.getLastLogIndex() >= localLastIndex;
     }
 
     private boolean heardFromLeaderRecently() {

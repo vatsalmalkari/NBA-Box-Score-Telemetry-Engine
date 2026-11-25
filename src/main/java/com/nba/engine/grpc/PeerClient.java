@@ -15,17 +15,13 @@ public class PeerClient implements AutoCloseable {
     public PeerClient(String peerAddress) {
         this.peerAddress = peerAddress;
 
-        this.channel = ManagedChannelBuilder
-                .forTarget(peerAddress)
-                .usePlaintext()
-                .build();
+        this.channel = ManagedChannelBuilder.forTarget(peerAddress).usePlaintext().build();
 
-        this.stub = RaftTelemetryServiceGrpc
-                .newBlockingStub(channel);
+        this.stub = RaftTelemetryServiceGrpc.newBlockingStub(channel);
     }
 
     public VoteResponse requestVote(VoteRequest request) {
-        return stub.withDeadlineAfter(300, TimeUnit.MILLISECONDS).preVote(request);
+        return stub.withDeadlineAfter(300, TimeUnit.MILLISECONDS).requestVote(request);
     }
 
     public AppendResponse appendEntries(AppendRequest request) {  

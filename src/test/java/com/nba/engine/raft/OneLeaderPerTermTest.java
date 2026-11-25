@@ -128,7 +128,8 @@ class OneLeaderPerTermTest {
         assertTrue(newTerm > oldTerm, "new leader term " + newTerm + " should exceed old term " + oldTerm);
 
         // Restart the old leader from its saved state file, reconnect its peers.
-        RaftNode restarted = new RaftNode(oldLeader, new ArrayList<PeerClient>(peersById.get(oldLeader)), new RaftStateStore(statePaths.get(oldLeader).toString()));
+        Path oldStatePath = statePaths.get(oldLeader);
+        RaftNode restarted = new RaftNode(oldLeader, new ArrayList<PeerClient>(peersById.get(oldLeader)), new RaftStateStore(oldStatePath.toString()), new RaftLog(oldStatePath.resolveSibling(oldLeader + "-log.dat")));
         nodes.add(restarted);
         byId.put(oldLeader, restarted);
         stopped.remove(oldLeader);
@@ -168,7 +169,7 @@ class OneLeaderPerTermTest {
             Path path = tempDir.resolve(id + ".properties");
             statePaths.put(id, path);
 
-            RaftNode node = new RaftNode(id, new ArrayList<PeerClient>(peersById.get(id)), new RaftStateStore(path.toString()));
+            RaftNode node = new RaftNode(id, new ArrayList<PeerClient>(peersById.get(id)), new RaftStateStore(path.toString()), new RaftLog(path.resolveSibling(id + "-log.dat")));
             nodes.add(node);
             byId.put(id, node);
         }
