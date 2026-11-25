@@ -29,17 +29,13 @@ public class PeerClient implements AutoCloseable {
     }
 
     public AppendResponse appendEntries(AppendRequest request) {  
-        return stub.withDeadlineAfter(150, TimeUnit.MILLISECONDS)
-                .appendEntries(request);
+        return stub.withDeadlineAfter(150, TimeUnit.MILLISECONDS).appendEntries(request);
     }
 
     public PingResponse ping(String senderId) {
-        PingRequest request = PingRequest.newBuilder()
-                .setSenderId(senderId)
-                .build();
+        PingRequest request = PingRequest.newBuilder().setSenderId(senderId).build();
 
-        return stub.withDeadlineAfter(3, TimeUnit.SECONDS)
-                .ping(request);
+        return stub.withDeadlineAfter(3, TimeUnit.SECONDS).ping(request);
     }
 
     public String getPeerAddress() {
@@ -61,7 +57,6 @@ public class PeerClient implements AutoCloseable {
     }
 
     public VoteResponse preVote(VoteRequest request) {
-        return stub.withDeadlineAfter(300, TimeUnit.MILLISECONDS)
-                .preVote(request);
+        return stub.withDeadlineAfter(300, TimeUnit.MILLISECONDS).preVote(request);
     }
 }

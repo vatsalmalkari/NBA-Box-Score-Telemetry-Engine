@@ -59,8 +59,7 @@ public class RaftStateStore {
             content.append("votedFor=").append(votedFor).append('\n');
         }
 
-        byte[] bytes = content.toString()
-                .getBytes(StandardCharsets.UTF_8);
+        byte[] bytes = content.toString().getBytes(StandardCharsets.UTF_8);
 
         try (FileChannel channel = FileChannel.open(
                 tempFile, CREATE, WRITE, TRUNCATE_EXISTING)) {
@@ -92,4 +91,5 @@ public class RaftStateStore {
 
         return properties;
     }
+    
 }

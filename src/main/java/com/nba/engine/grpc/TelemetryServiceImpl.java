@@ -15,27 +15,18 @@ public class TelemetryServiceImpl
     }
 
     @Override
-    public void ping(
-            PingRequest request,
-            StreamObserver<PingResponse> responseObserver) {
+    public void ping(PingRequest request, StreamObserver<PingResponse> responseObserver) {
 
-        System.out.println(
-                nodeId + " received ping from " + request.getSenderId()
-        );
+        System.out.println(nodeId + " received ping from " + request.getSenderId());
 
-        PingResponse response = PingResponse.newBuilder()
-                .setReceiverId(nodeId)
-                .setSuccess(true)
-                .build();
+        PingResponse response = PingResponse.newBuilder().setReceiverId(nodeId).setSuccess(true).build();
 
         responseObserver.onNext(response);
         responseObserver.onCompleted();
     }
 
     @Override
-    public void requestVote(
-            VoteRequest request,
-            StreamObserver<VoteResponse> responseObserver) {
+    public void requestVote(VoteRequest request, StreamObserver<VoteResponse> responseObserver) {
 
         VoteResponse response = raftNode.handleVoteRequest(request);
 
@@ -44,9 +35,7 @@ public class TelemetryServiceImpl
     }
 
     @Override
-    public void appendEntries(
-            AppendRequest request,
-            StreamObserver<AppendResponse> responseObserver) {
+    public void appendEntries(AppendRequest request, StreamObserver<AppendResponse> responseObserver) {
 
         AppendResponse response = raftNode.handleAppendEntries(request);
 

@@ -19,8 +19,7 @@ public class TelemetryServer {
 
         NodeConfig config = NodeConfig.fromEnvironment();
 
-        String stateFile = System.getenv()
-                .getOrDefault("RAFT_STATE_FILE", "/data/raft-state.properties");
+        String stateFile = System.getenv().getOrDefault("RAFT_STATE_FILE", "/data/raft-state.properties");
 
         List<PeerClient> peerClients = new ArrayList<>();
 
@@ -30,36 +29,24 @@ public class TelemetryServer {
 
         RaftStateStore stateStore = new RaftStateStore(stateFile);
 
-        RaftNode raftNode = new RaftNode(
-                config.nodeId(),
-                peerClients,
-                stateStore
-        );
+        RaftNode raftNode = new RaftNode(config.nodeId(), peerClients, stateStore);
 
-        Server server = ServerBuilder
-                .forPort(50051)
-                .addService(new TelemetryServiceImpl(
-                        config.nodeId(),
-                        raftNode
-                ))
-                .build()
-                .start();
+        Server server = ServerBuilder.forPort(50051).addService(new TelemetryServiceImpl(config.nodeId(),raftNode)).build().start();
 
-        System.out.println(
-                config.nodeId() + " started on port 50051"
-        );
+        System.out.println(config.nodeId() + " started on port 50051");
 
         raftNode.start();
 
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            System.out.println(config.nodeId() + " shutting down");
-
-            server.shutdown();
-
-            for (PeerClient peer : peerClients) {
-                peer.close();
-            }
-        }));
+        Runtime.getRuntime().addShutdownHook(
+                new Thread(() -> {
+                        System.out.println(config.nodeId() + " shutting down");
+                        server.shutdown();
+                                for (PeerClient peer : peerClients) {
+                                        peer.close();
+                                }
+                        }
+                )
+        );
 
         server.awaitTermination();
     }

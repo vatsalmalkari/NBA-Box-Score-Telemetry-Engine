@@ -17,10 +17,7 @@ public record NodeConfig(String nodeId, List<String> peers) {
             throw new IllegalStateException("PEERS is not configured");
         }
 
-        List<String> peerList = Arrays.stream(peers.split(","))
-                .map(String::trim)
-                .filter(peer -> !peer.isEmpty())
-                .toList();
+        List<String> peerList = Arrays.stream(peers.split(",")).map(String::trim).filter(peer -> !peer.isEmpty()).toList();
 
         return new NodeConfig(nodeId, peerList);
     }
